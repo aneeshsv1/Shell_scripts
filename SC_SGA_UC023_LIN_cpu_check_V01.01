@@ -1,0 +1,676 @@
+#!/usr/bin/env bash
+#
+#------------------------------------------------------------------------------
+# library related constant
+#------------------------------------------------------------------------------
+
+# Script Required info
+readonly SCRIPT_NAME=${0##*/}
+readonly SCRIPT_DIR=$(readlink -m $(dirname $0))
+# SCRIPT_DEBUG -- please specify in script.
+# SCRIPT_VERSION -- please specify in script.
+
+# Script Exit Code
+EXIT_CODE="NULL"                # Exit code default value
+readonly EXIT_OK=0              # Everything working fine
+readonly EXIT_WARN=1            # Script check conclude warning
+readonly EXIT_ALERT=2           # Script check conclude alert
+readonly EXIT_REQ=10            # Error dependencies or requirement
+readonly EXIT_OPTION=20         # Error input option or argument
+readonly EXIT_UNKNOWN=90        # Error unknown
+
+# Script Run Date
+readonly DATE_TIME_NOW_UTC=$(TZ=UTC date '+%a~%b~%d~%T~%Z~%Y')
+readonly DATE_TIME_NOW_SERVER=$(date '+%a~%b~%d~%T~%Z~%Y')
+readonly DATE_TIME_NOW_CYBERJAYA=$(TZ=Asia/Kuala_Lumpur date '+%a~%b~%d~%T~%Z~%Y')
+
+# Flag file for check parameter
+readonly FLAG_FILE=/etc/evauto.flag
+
+#=== FUNCTION =================================================================
+# NAME:        version
+# DESCRIPTION: display script version, copyright and ownership
+# PARAMETER  : NA
+#==============================================================================
+version() {
+  cat << VERDOC
+
+  PROGRAM: ${SCRIPT_NAME}    VERSION: ${SCRIPT_VER}
+  Copyright (C) 2017 DCO Engineering, T-Systems (M) Sdn. Bhd.
+  There is NO WARRANTY, to the extent permitted by law.
+
+VERDOC
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_empty
+# DESCRIPTION: check if variable is empty
+# PARAMETER 1: variable to be check
+#==============================================================================
+is_empty() {
+  local var=$1
+  [[ -z $var ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_not_empty
+# DESCRIPTION: check if variable is not empty
+# PARAMETER 1: variable to be check
+#==============================================================================
+is_not_empty() {
+  local var=$1
+  [[ -n $var ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_file
+# DESCRIPTION: check if file exist
+# PARAMETER 1: file to be check
+#==============================================================================
+is_file() {
+  local file=$1
+  [[ -f $file ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_dir
+# DESCRIPTION: check if directory exist
+# PARAMETER 1: directory to be check
+#==============================================================================
+is_dir() {
+  local dir=$1
+  [[ -d $dir ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_symlink
+# DESCRIPTION: check if symbolic link exist
+# PARAMETER 1: symbolic link to be check
+#==============================================================================
+is_symlink() {
+  local symlink=$1
+  [[ -h $symlink ]]
+}
+
+
+#=== FUNCTION =================================================================
+# NAME: is_mounted
+# DESCRIPTION: check if mount point mounted
+# PARAMETER 1: mount point path to be check
+#==============================================================================
+is_mounted() {
+  local path=${1}
+  mountpoint -q ${path}
+  return $?
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_root
+# DESCRIPTION: check if current effective user is root
+# PARAMETER 1: NA
+#==============================================================================
+is_root() {
+  [[ ${EUID} -ne 0 ]] && return 1 || return 0
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_os
+# DESCRIPTION: check os
+# PARAMETER 1: os type. example "linux", "solaris", "aix"
+#==============================================================================
+is_os() {
+  [[ "${OSTYPE}" == $1* ]] && return 0 || return 1
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_command
+# DESCRIPTION: check command available or not
+# PARAMETER 1: command. example "cp", "ll"
+#==============================================================================
+is_command() {
+  local cmd=$1
+  [[ $(type -P $cmd) ]] && return 0 || return 1
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_float
+# DESCRIPTION: check value/string if it's float
+# PARAMETER 1: value/string to be check
+#==============================================================================
+is_float() {
+  local regex='^[0-9]+([.][0-9]+)?$'
+  local float=${1}
+  [[ ${float} =~ $regex ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_integer
+# DESCRIPTION: check value/string if it's integer
+# PARAMETER 1: value/string to be check
+#==============================================================================
+is_integer() {
+  local regex='^[0-9]+$'
+  local integer=${1}
+  [[ ${integer} =~ $regex ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_number
+# DESCRIPTION: check value/string if it's numeric
+# PARAMETER 1: value/string to be check
+#==============================================================================
+is_number() {
+  local regex='^-?[0-9]+([.][0-9]+)?$'
+  local number=${1}
+  [[ ${number} =~ $regex ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME:        is_flag
+# DESCRIPTION: Check parameter value in flag file /etc/evautoflag.conf
+#              Parameter name same as script name. If script name changed,
+#              parameter also need to be change. Parameter value supposed to be
+#              yes or no.
+# PARAMETER 1: parameter name (same as script name)
+#==============================================================================
+is_flag() {
+  local parameter=${1}
+
+  if is_file "${FLAG_FILE}"; then
+    # if flag file found retrieve parameter value
+    local value=$(grep ^${parameter}= ${FLAG_FILE} 2>&1 | awk -F= '{print $2}' | tr '[:upper:]' '[:lower:]')
+    if is_empty "${value}"; then
+      # if parameter no defined or parameter have no value, perform check
+      return 0
+    elif [[ ${value} == no ]]; then
+      # if parameter value equal to no, cancel check
+      echo "NORMAL: ${SCRIPT_NAME} CANCELED; check was disabled by flag"
+      ERRCODE=0
+      EXIT_CODE=${EXIT_OK}
+      return 1
+    elif [[ ${value} == yes ]]; then
+      # if parameter value equal to yes, perform check
+      return 0
+    else
+      # if parameter value not recognized, perform check
+      return 0
+    fi
+  else
+    # if flag file missing, perform check
+    return 0
+  fi
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_dcs_version
+# DESCRIPTION: check dcs image version
+# PARAMETER 1: dcs image version, eample "s11.4.5", "r6.8.3"
+#==============================================================================
+is_dcs_version() {
+  local version=$1
+  [[ "$(head -1 /etc/imageversion)" == $version ]] && return 0 || return 1
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_dcs_release
+# DESCRIPTION: check dcs image release
+# PARAMETER 1: dcs image release, example "2016-1.1", "2016_2.0"
+#==============================================================================
+is_dcs_release() {
+  local release=$1
+  [[ "$(tail -1 /etc/imageversion)" == $release ]] && return 0 || return 1
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_dcs_frame
+# DESCRIPTION: check dcs frame release
+# PARAMETER 1: dcs frame base, example "2016_2.2"
+#==============================================================================
+is_dcs_frame() {
+  local frame=$1
+  local base=$(grep Base /var/AppCom/etc/frame.AppCom.startup-info)
+  [[ "${base##* }" == $frame ]] && return 0 || return 1
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_alert
+# DESCRIPTION: check value is above alert treshold
+# PARAMETER 1: alert threshold
+# PARAMETER 2: value to check
+#==============================================================================
+is_alert() {
+  local alert_value=${1}
+  local check_value=${2}
+
+  (( $(echo "${check_value} >= ${alert_value}" | bc -l) ))
+}
+
+#=== FUNCTION =================================================================
+# NAME: is_warning
+# DESCRIPTION: check value is below alert and above warning thresholds
+# PARAMETER 1: alert threshold
+# PARAMETER 2: warning threshold
+# PARAMETER 3: value to check
+#==============================================================================
+is_warning() {
+  local alert_value=${1}
+  local warn_value=${2}
+  local check_value=${3}
+
+   if (( $(echo "${check_value} < ${alert_value}" | bc -l) )) && (( $(echo "${check_value} >= ${warn_value}" | bc -l) )); then
+     return 0
+   else
+     return 1
+   fi
+}
+
+#=== FUNCTION =================================================================
+# NAME:        get_pid
+# DESCRIPTION: check daemon running and return its pid
+# PARAMETER 1: daemon
+#==============================================================================
+get_pid() {
+  local daemon=${1}
+  echo $(pidof -s ${daemon} 2>/dev/null)
+}
+
+#=== FUNCTION =================================================================
+# NAME:        get_distro
+# DESCRIPTION: return linux distro
+# PARAMETER 1: NA
+#==============================================================================
+get_distro() {
+  echo "$(cat /etc/*-release 2>&1 | tr [:upper:] [:lower:] | grep -Poi '(debian|ubuntu|red hat|centos|sles)' | uniq)"
+}
+
+#=== FUNCTION =================================================================
+# NAME:        is_distro
+# DESCRIPTION: check given linux distro
+# PARAMETER 1: linux distro = debian | ubuntu | red hat | centos | sles
+#==============================================================================
+is_distro() {
+  local distro=${1}
+  [[ "$(cat /etc/*-release 2>&1 | tr [:upper:] [:lower:] | grep -Poi '(debian|ubuntu|red hat|centos|sles)' | uniq)" == "${1}" ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME:        get_customer
+# DESCRIPTION: return server customer
+# PARAMETER 1: NA
+#==============================================================================
+get_customer() {
+  echo "$(grep LDAPCST /var/AppCom/etc/frame.AppCom.config 2>&1 | awk '{print $2}')"
+}
+
+#=== FUNCTION =================================================================
+# NAME:        is_customer
+# DESCRIPTION: check given customer is owner of the server
+# PARAMETER 1: customer = sh | kn | linde
+#==============================================================================
+is_customer() {
+  local customer=${1}
+  [[ "$(grep ^LDAPCST /var/AppCom/etc/frame.AppCom.config 2>&1 | awk '{print $2}')" == "${customer}" ]]
+}
+
+#=== FUNCTION =================================================================
+# NAME:        rm_dir
+# DESCRIPTION: remove directory if no file system mounted
+# PARAMETER 1: directory with path to be remove
+#==============================================================================
+function rm_dir {
+  local target=${1}
+  if ! is_mounted ${target}; then
+    rm -rf ${target} >&2
+    return $?
+  else
+    return 1 #directory mounted
+  fi
+}
+
+#=== FUNCTION =================================================================
+# NAME:        service_start
+# DESCRIPTION: start service and return value succesfull or not
+# PARAMETER 1: service_name
+#==============================================================================
+service_start() {
+  local service=${1}
+  if is_command "systemctl"; then
+    systemctl stop ${service} >/dev/null 2>&1
+    systemctl start ${service} >/dev/null 2>&1
+    sleep 2
+    systemctl status ${service} 2>&1 | grep running >/dev/null 2>&1
+  else
+    service ${service} stop >/dev/null 2>&1
+    service ${service} start >/dev/null 2>&1
+    sleep 2
+    service ${service} status 2>&1 | grep running >/dev/null 2>&1
+  fi
+  return $?
+}
+
+#=== FUNCTION =================================================================
+# NAME:        percentage
+# DESCRIPTION: calculate percentage
+# PARAMETER 1: value to convert to percentage
+# PARAMETER 2: total value
+#==============================================================================
+percentage() {
+  local piece=${1}
+  local whole=${2}
+  echo $(echo "scale=2;${piece} / ${whole} * 100" | bc -l)
+}
+
+#=== FUNCTION =================================================================
+# NAME:        convert_kb_to
+# DESCRIPTION: convert kilobyte to megabyte, gigabyte and terabyte
+# PARAMETER 1: MB, GB ot TB (only accept capital letter)
+# PARAMETER 2: value in kilobyte to convert
+#==============================================================================
+convert_kb_to() {
+  local label=${1}
+  local unit=""
+  local convert=${2}
+  case ${label} in
+    MB)
+      unit="1024"
+    ;;
+    GB)
+      unit="1024^2"
+    ;;
+    TB)
+      unit="1024^3"
+    ;;
+    *)
+      unit="1"
+    ;;
+  esac
+  echo $(echo "scale=1; ${convert} / ${unit}" | bc -l)
+}
+
+#=== FUNCTION =================================================================
+# NAME: pause
+# DESCRIPTION: pause script output. Continue on [Enter]
+# PARAMETER 1: NA
+#==============================================================================
+pause()
+{
+  read -p "Press [Enter] key return to continue..." fackEnterKey
+}
+
+# Still developing
+logit()
+{
+  echo `date +'%b %e %R '` "${APP_USER_LOGIN}: $@" >> ${APP_LOG_FILE}
+}
+
+# Library file end ####################################
+
+set -o nounset
+#
+#==============================================================================
+#
+# FILE:         cpu_check
+#
+# DESCRIPTION:  Script will check cpu utilization (user,system,iowait,idle in %) 
+#
+# REQUIREMENTS: iostat
+# BUGS:         ---
+# NOTES:        FUTURE: can set threshold by prompt
+# AUTHOR:       Mat Salleh, Fahmi <Mohd-Fahmi.Mat-Salleh@t-systems.com>
+# COMPANY:      DCO Engineering, T-Systems (M) Sdn. Bhd.
+# VERSION:      0.6.5 (MAJOR.MINOR.BUGFIX)
+# CREATED:      26.07.2017 - 06:28 PM
+# REVISION:     28.08.2017 - 03:28 PM
+#
+#==============================================================================
+
+sleep 300
+
+#------------------------------------------------------------------------------
+# source common function library
+#------------------------------------------------------------------------------
+#[[ -f "./common.lib.sh" ]] && . ./common.lib.sh || { echo "Library common not found!"; exit 10; }
+
+#------------------------------------------------------------------------------
+# source another specific function library here
+#------------------------------------------------------------------------------
+#. ./other.lib.sh
+
+#------------------------------------------------------------------------------
+# script related constant
+#------------------------------------------------------------------------------
+readonly SCRIPT_VER=0.6.5
+readonly SCRIPT_DEBUG=0
+
+#------------------------------------------------------------------------------
+# initialize script global variables here
+#------------------------------------------------------------------------------
+#CPU alert % threshold
+readonly CPU_ALERT_USER=90
+readonly CPU_ALERT_NICE=80
+readonly CPU_ALERT_SYSTEM=90
+readonly CPU_ALERT_IOWAIT=70
+readonly CPU_ALERT_STEAL=20
+readonly CPU_ALERT_IDLE=10
+
+#CPU warning % threshold
+readonly CPU_WARN_USER=70
+readonly CPU_WARN_NICE=60
+readonly CPU_WARN_SYSTEM=70
+readonly CPU_WARN_IOWAIT=60
+readonly CPU_WARN_STEAL=10          # > 20 minutes, VM running slower than normal
+readonly CPU_WARN_IDLE=30
+
+# Script parameters value if not define
+INTERVAL=${INTERVAL:="3"}
+COUNT=${COUNT:="2"}
+
+CPU_USER=""
+CPU_NICE=""
+CPU_SYSTEM=""
+CPU_IOWAIT=""
+CPU_STEAL=""
+CPU_IDLE=""
+
+#=== FUNCTION =================================================================
+# NAME:        usage
+# DESCRIPTION: display script usage
+# PARAMETER  : NA
+#==============================================================================
+usage() {
+  cat <<  USAGEDOC
+
+  Usage:
+        ${SCRIPT_NAME} [-h] | [-v] | [ -c COUNT] [-i SECONDS]
+  
+  Description:
+        ${SCRIPT_NAME} is a program for monitoring and checking 
+        cpu statistics.
+ 
+        The script is used to query 6 of the key cpu statistics
+        (user,system,iowait,steal,nice,idle) at the same time.
+        Then check statistic against threshold specified.
+  
+        If threshold reached, top 5 processes cosumed most cpu
+        will be listed. 
+
+  optional arguments:
+       -h             Display this help and exit
+       -v             Output version information
+       -c COUNT       Number of report to repeat (default : ${COUNT})
+       -i SECONDS     Interval between report in seconds (default : ${INTERVAL})
+
+USAGEDOC
+}
+
+#=== FUNCTION =================================================================
+# NAME:        cpu_get_stats
+# DESCRIPTION: gather cpu usage statistics
+# PARAMETER 1: NA
+#==============================================================================
+cpu_get_stats() {
+  local cpu_stats="$(iostat -c ${INTERVAL} ${COUNT} | tail -2 | head -n 1)"
+
+  CPU_USER="$(echo $cpu_stats | awk '{ print $1 }')"
+  CPU_NICE="$(echo $cpu_stats | awk '{ print $2 }')"
+  CPU_SYSTEM="$(echo $cpu_stats | awk '{ print $3 }')"
+  CPU_IOWAIT="$(echo $cpu_stats | awk '{ print $4 }')"
+  CPU_STEAL="$(echo $cpu_stats | awk '{ print $5 }')"
+  CPU_IDLE="$(echo $cpu_stats | awk '{ print $6 }')"
+}
+
+#=== FUNCTION =================================================================
+# NAME:        cpu_check_threshold
+# DESCRIPTION: check cpu usage against threshold
+# PARAMETER 1: NA
+#==============================================================================
+cpu_check_threshold() {
+  local cpu_data="user=${CPU_USER}% nice=${CPU_NICE}% system=${CPU_SYSTEM}% iowait=${CPU_IOWAIT}% steal=${CPU_STEAL}% idle=${CPU_IDLE}%"
+
+  if is_alert ${CPU_ALERT_USER} ${CPU_USER}; then
+    echo "CRITICAL; USER HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_ALERT}
+  elif is_alert ${CPU_ALERT_NICE} ${CPU_NICE}; then
+    echo "CRITICAL; NICE HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_ALERT}
+  elif is_alert ${CPU_ALERT_SYSTEM} ${CPU_SYSTEM}; then
+    echo "CRITICAL; SYSTEM HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_ALERT}
+  elif is_alert ${CPU_ALERT_IOWAIT} ${CPU_IOWAIT}; then
+    echo "CRITICAL; IOWAIT HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_ALERT}
+  elif is_alert ${CPU_ALERT_STEAL} ${CPU_STEAL}; then
+    echo "CRITICAL; STEAL HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_ALERT}
+  elif is_alert $((100 - ${CPU_ALERT_IDLE})) $(echo "100 - ${CPU_IDLE}" | bc -l); then
+    echo "CRITICAL; IDLE LOW; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_ALERT}
+  elif is_warning ${CPU_ALERT_USER} ${CPU_WARN_USER} ${CPU_USER}; then
+    echo "WARNING; USER HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_WARN}
+  elif is_warning ${CPU_ALERT_NICE} ${CPU_WARN_NICE} ${CPU_NICE}; then
+    echo "WARNING; NICE HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_WARN}
+  elif is_warning ${CPU_ALERT_SYSTEM} ${CPU_WARN_SYSTEM} ${CPU_SYSTEM}; then
+    echo "WARNING; SYSTEM HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_WARN}
+  elif is_warning ${CPU_ALERT_IOWAIT} ${CPU_WARN_IOWAIT} ${CPU_IOWAIT}; then
+    echo "WARNING; IOWAIT HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_WARN}
+  elif is_warning ${CPU_ALERT_STEAL} ${CPU_WARN_STEAL} ${CPU_STEAL}; then
+    echo "WARNING; STEAL HIGH; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_WARN}
+  elif is_warning $(echo "100 - ${CPU_ALERT_IDLE}" | bc -l) $(echo "100 - ${CPU_WARN_IDLE}" | bc -l) $(echo "100 - ${CPU_IDLE}" | bc -l); then
+    echo "WARNING; IDLE LOW; ${cpu_data}; $(cpu_check_process)"
+    EXIT_CODE=${EXIT_WARN}
+  else
+    echo "OK; ALL NORMAL; ${cpu_data}"
+    EXIT_CODE=${EXIT_OK}
+  fi
+}
+
+#=== FUNCTION =================================================================
+# NAME:        cpu_check_process
+# DESCRIPTION: list all process and sort by cpu
+# PARAMETER 1: NA
+#==============================================================================
+cpu_check_process() {
+  local process_top=$(ps -e --no-headers --format comm,user,%cpu --sort=-%cpu \
+                       | head -5 \
+                       | awk '{print $1 "/" $2 "(" $3 "%)"}' \
+                       | sed ':a;N;$!ba;s/\n/ /g')
+  echo "${process_top}"
+}
+
+#=== FUNCTION =================================================================
+# NAME:        requirement
+# DESCRIPTION: check all script dependencies
+# PARAMETER 1: NA
+#==============================================================================
+requirement() {
+  if is_flag "${SCRIPT_NAME}"; then
+    if ! is_command "iostat"; then
+      echo -e "${SCRIPT_NAME}: iostat not found or is not executable." 
+      EXIT_CODE=${EXIT_REQ}
+    fi
+  fi
+}
+
+#=== FUNCTION =================================================================
+# NAME:        main
+# DESCRIPTION: bussiness logic controller
+# PARAMETER 1: all script input arguments
+#==============================================================================
+main() {
+  local key
+
+  #----------------------------------------------------------------------------
+  # check script requirment
+  #----------------------------------------------------------------------------
+  requirement
+
+  #----------------------------------------------------------------------------
+  # detect for script input argument and its value
+  #----------------------------------------------------------------------------
+  while [[ $# -gt 0 ]]
+  do
+    key="${1}"
+
+    case $key in
+      -h|--help)
+        usage
+        EXIT_CODE=${EXIT_OK}
+        break
+      ;;
+      -v|--version)
+        version
+        EXIT_CODE=${EXIT_OK}
+        break
+      ;;
+      -i)
+        if [[ "${2+defined}" ]] && is_integer ${2}; then
+          INTERVAL=${2}
+          shift
+        else
+          echo -e "${SCRIPT_NAME}: invalid option -- '${key}'\nTry \`${SCRIPT_NAME} -h\` for more information.">&2
+          EXIT_CODE=${EXIT_OPTION}
+          break
+        fi
+      ;;
+      -c)
+        if [[ "${2+defined}" ]] && is_integer ${2}; then
+          COUNT=${2}
+          shift
+        else
+          echo -e "${SCRIPT_NAME}: invalid option -- '${key}'\nTry \`${SCRIPT_NAME} -h\` for more information.">&2
+          EXIT_CODE=${EXIT_OPTION}
+          break
+        fi
+      ;;
+      *) 
+        echo -e "${SCRIPT_NAME}: invalid option -- '${key}'\nTry \`${SCRIPT_NAME} -h\` for more information.">&2
+        EXIT_CODE=${EXIT_OPTION}
+        break
+      ;;
+    esac
+    shift
+  done
+
+  #----------------------------------------------------------------------------
+  # check required parameter and call the example_function_1 function
+  #----------------------------------------------------------------------------
+  if [[ ${EXIT_CODE} == NULL ]]; then
+    cpu_get_stats
+    cpu_check_threshold
+  fi
+}
+
+#------------------------------------------------------------------------------
+# call main as logic controller
+#------------------------------------------------------------------------------
+main "$@"
+
+#------------------------------------------------------------------------------
+# exit with STYLE ;-P
+#------------------------------------------------------------------------------
+exit ${EXIT_CODE}
